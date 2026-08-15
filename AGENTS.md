@@ -146,6 +146,7 @@ string is the only breadcrumb the maintainer has when triaging.
 - Do not add network calls, shell execution, or broad file access without clear user need.
 - Keep the macOS editor core, preview pipeline, and existing storyboard scenes on AppKit. A new self-contained panel may host SwiftUI through `NSHostingView`; that is not licence to push SwiftUI into `EditTextView` / `MPreviewView` / `ViewController`. `MiaoYanMobile/` is SwiftUI throughout, and UI layers are not shared across the two targets.
 - Preserve recoverability for delete flows. Notes and attachments should move through the app Trash or system Trash path that matches the current context, not disappear through direct deletion.
+- The app Trash may resolve to the same directory as the volume's system Trash. Calling `FileManager.trashItem` on an item already there renames it in place and makes it reappear. Mark it with `AppIdentifier.removedFromTrashKey` and exclude that marker only inside Trash projects, so Finder recovery into a normal project remains visible.
 - Treat iCloud sync and symlinked directories as file-system-sensitive surfaces; resolve paths deliberately and avoid loops or duplicate indexing.
 
 ## Investigation Order
@@ -169,6 +170,7 @@ Avoid broad scans of `build/`, `.build/`, `dist/`, and bundled web assets unless
 - iCloud sync spans macOS storage, `Business/CloudSyncManager.swift`, and `MiaoYanMobile/Services/CloudSyncManager.swift`. Verify fallback behavior when iCloud is unavailable.
 - `MiaoYanMobile/` is a real iOS target, not sample code. Keep SwiftUI, file reading, mobile rendering, and target membership aligned.
 - Trash handling spans `Business/Storage.swift`, `Business/Note.swift`, sidebar drag/drop, attachment cleanup, and system Trash fallback.
+- A successfully removed note must retire its `Note` instance before any watcher, editor, lifecycle flush, or upload callback can save it again. Existing-note writes must fail closed if the file disappears, and UI rows may be removed only for filesystem operations that succeeded.
 - Version history lives in `Business/NoteVersionManager.swift` and `Controllers/VersionHistoryViewController.swift`; keep file IO off the main thread and UI updates on the main thread.
 - Mermaid and PDF export span `Business/HtmlManager.swift`, `Helpers/PdfExportController.swift`, and `Extensions/MPreviewView+Export.swift`. Wait for images and Mermaid rendering before capture.
 - Async note/image/file loading is intentional. Do not reintroduce blocking reads on the main thread for large notes or previews.

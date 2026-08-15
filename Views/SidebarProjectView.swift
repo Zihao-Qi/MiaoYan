@@ -297,11 +297,20 @@ class SidebarProjectView: NSOutlineView,
     }
 
     private func moveNotesToTrash(notes: [Note], vc: ViewController) {
-        vc.editArea.clear()
-        vc.storage.removeNotes(notes: notes) { _ in
+        let selectedRow = vc.notesTableView.selectedRowIndexes.min() ?? -1
+        vc.storage.removeNotes(
+            notes: notes,
+            didRemove: { removedNotes in
+                vc.notesTableView.removeAndReselect(
+                    notes: removedNotes,
+                    originalRow: selectedRow)
+            }
+        ) { _ in
             DispatchQueue.main.async {
                 vc.storageOutlineView.reloadSidebar()
-                vc.notesTableView.removeByNotes(notes: notes)
+                if vc.notesTableView.noteList.isEmpty {
+                    vc.editArea.clear()
+                }
             }
         }
     }

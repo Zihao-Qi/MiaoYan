@@ -86,7 +86,13 @@ class FileSystemEventManager {
     }
 
     private func isValidFileType(_ url: URL) -> Bool {
-        storage.allowedExtensions.contains(url.pathExtension) && storage.isValidUTI(url: url)
+        if let project = storage.getProjectBy(url: url),
+            Storage.shouldHideRemovedTrashItem(at: url, in: project)
+        {
+            return false
+        }
+
+        return storage.allowedExtensions.contains(url.pathExtension) && storage.isValidUTI(url: url)
     }
 
     private func handleFileRemoval(url: URL) throws {

@@ -1,4 +1,5 @@
 import Cocoa
+import Darwin
 import Foundation
 import LocalAuthentication
 import ZipArchive
@@ -30,11 +31,15 @@ public class Note: NSObject {
 
     // Debounce for save operations
     private var saveWorkItem: DispatchWorkItem?
+    private var hasUnpersistedChanges = false
+    private var isRetired = false
+    private var allowsInitialFileCreation = false
     public var hasPendingSave: Bool {
-        if let item = saveWorkItem {
-            return !item.isCancelled
-        }
-        return false
+        guard !isRetired else { return false }
+        return saveWorkItem.map { !$0.isCancelled } == true
+    }
+    var needsSave: Bool {
+        !isRetired && hasUnpersistedChanges
     }
 
     private var decryptedTemporarySrc: URL?
@@ -48,6 +53,7 @@ public class Note: NSObject {
 
         self.url = url
         self.project = project
+        allowsInitialFileCreation = !FileManager.default.fileExists(atPath: url.path)
 
         super.init()
 
@@ -78,6 +84,7 @@ public class Note: NSObject {
             name: resolvedName,
             project: resolvedProject,
             ext: ext)
+        allowsInitialFileCreation = true
 
         super.init()
         parseURL()
@@ -247,10 +254,7 @@ public class Note: NSObject {
 
     public func remove() {
         if !isTrash(), !isEmpty() {
-            if let trashURLs = removeFile() {
-                url = trashURLs[0]
-                parseURL()
-            }
+            _ = removeFile()
         } else {
             _ = removeFile()
 
@@ -281,16 +285,42 @@ public class Note: NSObject {
         content.length == 0
     }
 
-    func removeFile(completely: Bool = false) -> [URL]? {
+    enum FileRemovalResult {
+        case moved(destination: URL, original: URL)
+        case hiddenFromMiaoYanTrash
+    }
+
+    func removeFile(completely: Bool = false) -> FileRemovalResult? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
 
         if isTrash() {
-            try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
-            NoteVersionManager.shared.removeVersions(for: self)
-            return nil
+            do {
+                if Storage.isSystemTrashProject(project) {
+                    // The app Trash is already the volume's system Trash.
+                    // Calling trashItem again only renames the file in place
+                    // ("note.md" -> "note 2.md"), so FSEvents imports it as
+                    // a new note. Mark it as removed from MiaoYan instead; it
+                    // stays recoverable in Finder's Trash and scans ignore the
+                    // marker only while the file remains in a Trash project.
+                    try url.setExtendedAttribute(
+                        data: Data([1]),
+                        forName: AppIdentifier.removedFromTrashKey)
+                } else {
+                    try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                }
+                NoteVersionManager.shared.removeVersions(for: self)
+            } catch {
+                AppDelegate.trackError(error, context: "Note.systemTrashError")
+                return nil
+            }
+            return .hiddenFromMiaoYanTrash
         }
 
         do {
+            // A note restored from Finder keeps its xattrs. Clear the marker
+            // before a later soft delete so it appears in MiaoYan Trash again.
+            try? url.removeExtendedAttribute(forName: AppIdentifier.removedFromTrashKey)
+
             guard let dst = Storage.sharedInstance().trashItem(url: url) else {
                 var resultingItemUrl: NSURL?
                 try FileManager.default.trashItem(at: url, resultingItemURL: &resultingItemUrl)
@@ -299,14 +329,14 @@ public class Note: NSObject {
 
                 let originalURL = url
                 overwrite(url: dst as URL)
-                return [url, originalURL]
+                return .moved(destination: url, original: originalURL)
             }
 
             try FileManager.default.moveItem(at: url, to: dst)
 
             let originalURL = url
             overwrite(url: dst)
-            return [url, originalURL]
+            return .moved(destination: url, original: originalURL)
 
         } catch {
             AppDelegate.trackError(error, context: "Note.trashError")
@@ -526,24 +556,29 @@ public class Note: NSObject {
     }
 
     public func save(content: NSMutableAttributedString) {
+        guard !isRetired else { return }
         self.content = content.unLoad()
+        hasUnpersistedChanges = true
 
         debounceSave(attributedString: self.content)
     }
 
     public func save(globalStorage: Bool = true) {
+        guard !isRetired else { return }
         if isMarkdown() {
             content = content.unLoadCheckboxes()
         }
+        hasUnpersistedChanges = true
 
         // Immediate save for manual requests or structure changes
-        executeSave(attributedString: content, globalStorage: globalStorage)
+        _ = executeSave(attributedString: content, globalStorage: globalStorage)
     }
 
     /// Synchronously runs any pending debounced save and clears the work item.
     /// Use from app/window lifecycle hooks (terminate, will-close, resign-key)
     /// and from explicit Cmd+S so unsaved edits cannot disappear in the 1.5s
-    /// debounce window. Safe to call when no save is pending (no-op).
+    /// debounce window. If a previous write failed after its timer fired, this
+    /// retries the still-dirty content even though no work item remains.
     ///
     /// Note on the worst-case race: if the debounce timer fires at almost
     /// exactly the same instant a caller invokes flushPendingSave, both can
@@ -554,30 +589,33 @@ public class Note: NSObject {
     /// debounceSave hook below also clears `saveWorkItem` from inside its own
     /// handler so the second branch becomes a no-op as soon as the workItem
     /// finishes naturally.
-    public func flushPendingSave(globalStorage: Bool = true) {
-        guard let workItem = saveWorkItem, !workItem.isCancelled else {
-            return
+    @discardableResult
+    public func flushPendingSave(globalStorage: Bool = true) -> Bool {
+        guard !isRetired else { return false }
+        if let workItem = saveWorkItem, !workItem.isCancelled {
+            workItem.cancel()
+            saveWorkItem = nil
         }
-        workItem.cancel()
-        saveWorkItem = nil
-        executeSave(attributedString: content, globalStorage: globalStorage)
+        guard hasUnpersistedChanges else { return true }
+        return executeSave(attributedString: content, globalStorage: globalStorage)
     }
 
     private func debounceSave(attributedString: NSAttributedString, globalStorage: Bool = true) {
+        guard !isRetired else { return }
         saveWorkItem?.cancel()
 
         // Two-step bind so the closure can compare against its own
         // DispatchWorkItem identity. After the timer fires naturally we
         // clear `saveWorkItem` if it still points at us; that turns a
-        // subsequent flushPendingSave call into a no-op instead of running
-        // executeSave a second time with the same content.
+        // subsequent successful flushPendingSave call into a no-op. A failed
+        // write remains retryable through hasUnpersistedChanges.
         var pending: DispatchWorkItem!
         pending = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             if self.saveWorkItem === pending {
                 self.saveWorkItem = nil
             }
-            self.executeSave(attributedString: attributedString, globalStorage: globalStorage)
+            _ = self.executeSave(attributedString: attributedString, globalStorage: globalStorage)
         }
 
         saveWorkItem = pending
@@ -585,7 +623,9 @@ public class Note: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: pending)
     }
 
-    private func executeSave(attributedString: NSAttributedString, globalStorage: Bool = true) {
+    @discardableResult
+    private func executeSave(attributedString: NSAttributedString, globalStorage: Bool = true) -> Bool {
+        guard !isRetired else { return false }
         // Cancel pending debounce if we are saving immediately
         saveWorkItem?.cancel()
 
@@ -595,6 +635,14 @@ public class Note: NSObject {
             let fileWrapper = getFileWrapper(attributedString: attributedString)
 
             let contentSrc: URL? = getContentFileURL()
+            guard contentSrc != nil || allowsInitialFileCreation else {
+                let error = NSError(
+                    domain: NSCocoaErrorDomain,
+                    code: CocoaError.fileNoSuchFile.rawValue,
+                    userInfo: [NSFilePathErrorKey: getURL().path])
+                AppDelegate.trackError(error, context: "Note.writeMissingFile")
+                return false
+            }
             let dst = contentSrc ?? getURL()
 
             var originalContentsURL: URL?
@@ -602,7 +650,14 @@ public class Note: NSObject {
                 originalContentsURL = contentSrc
             }
 
-            try fileWrapper.write(to: dst, options: .atomic, originalContentsURL: originalContentsURL)
+            if let originalContentsURL = originalContentsURL {
+                try writeReplacingExistingFile(
+                    fileWrapper,
+                    at: dst,
+                    originalContentsURL: originalContentsURL)
+            } else {
+                try fileWrapper.write(to: dst, options: .atomic, originalContentsURL: nil)
+            }
             try FileManager.default.setAttributes(attributes, ofItemAtPath: dst.path)
 
             modifiedLocalAt = Date()
@@ -619,12 +674,79 @@ public class Note: NSObject {
                     style: .warning
                 )
             }
-            return
+            return false
         }
 
         if globalStorage {
             sharedStorage.add(self)
         }
+        allowsInitialFileCreation = false
+        hasUnpersistedChanges = false
+        return true
+    }
+
+    /// Writes through a sibling temporary item, then swaps it with the live
+    /// file only while that destination still exists. FileWrapper's atomic
+    /// write recreates a missing destination, even with originalContentsURL,
+    /// which lets an external delete race resurrect a note. RENAME_SWAP
+    /// requires both paths to exist at the instant of the exchange.
+    private func writeReplacingExistingFile(
+        _ fileWrapper: FileWrapper,
+        at destination: URL,
+        originalContentsURL: URL
+    ) throws {
+        let replacement =
+            destination
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                ".\(destination.lastPathComponent).miaoyan-save-\(UUID().uuidString)")
+
+        defer {
+            if FileManager.default.fileExists(atPath: replacement.path) {
+                do {
+                    try FileManager.default.removeItem(at: replacement)
+                } catch {
+                    AppDelegate.trackError(error, context: "Note.cleanupReplacementFile")
+                }
+            }
+        }
+
+        try fileWrapper.write(to: replacement, options: .atomic, originalContentsURL: nil)
+
+        let metadataResult = originalContentsURL.path.withCString { source in
+            replacement.path.withCString { target in
+                copyfile(source, target, nil, UInt32(COPYFILE_METADATA))
+            }
+        }
+        guard metadataResult == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        try Self.swapExistingFile(at: destination, with: replacement)
+    }
+
+    /// Atomically exchanges two existing filesystem items. Kept internal so
+    /// the fail-closed missing-destination behavior has direct test coverage.
+    static func swapExistingFile(at destination: URL, with replacement: URL) throws {
+        let result = replacement.path.withCString { source in
+            destination.path.withCString { target in
+                renamex_np(source, target, UInt32(RENAME_SWAP))
+            }
+        }
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    /// Permanently closes the write lifecycle of a Note instance after its
+    /// filesystem removal succeeds. Watcher, editor, and upload callbacks may
+    /// still hold the old object, so the final save sink must reject them.
+    func retireAfterRemoval() {
+        guard !isRetired else { return }
+        isRetired = true
+        hasUnpersistedChanges = false
+        saveWorkItem?.cancel()
+        saveWorkItem = nil
     }
 
     public func getContentFileURL() -> URL? {

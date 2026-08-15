@@ -94,6 +94,9 @@ extension ViewController {
         // Ensure notes are loaded for the selected project(s)
         if let projects = searchParams.projects {
             for project in projects {
+                if project.isTrash {
+                    storage.retireMissingNotes(in: project)
+                }
                 storage.loadMissingNotes(for: project)
             }
         }

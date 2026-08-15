@@ -254,11 +254,10 @@ class MainWindowController: NSWindowController, NSWindowDelegate, NSWindowRestor
         lastResignKeyFlushAt = now
 
         guard let activeNote = EditTextView.note else { return }
-        // hasPendingSave means textDidChange already pushed the latest editor
-        // contents into note.content and queued a debounced write. Skipping
-        // when it's false avoids gratuitous IO when the user just lost focus
-        // without touching anything.
-        guard activeNote.hasPendingSave else { return }
+        // needsSave also stays true after a failed debounced write, so losing
+        // focus retries dirty content without making the filesystem watcher
+        // mistake it for a timer that is still waiting to fire.
+        guard activeNote.needsSave else { return }
         activeNote.flushPendingSave()
     }
 

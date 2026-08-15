@@ -262,6 +262,24 @@ class Storage {
         return try? FileManager.default.url(for: .trashDirectory, in: .allDomainsMask, appropriateFor: url, create: false)
     }
 
+    static func isSystemTrashProject(_ project: Project) -> Bool {
+        guard project.isTrash,
+            let systemTrash = try? FileManager.default.url(
+                for: .trashDirectory,
+                in: .allDomainsMask,
+                appropriateFor: project.url,
+                create: false)
+        else { return false }
+
+        return systemTrash.resolvingSymlinksInPath().standardizedFileURL
+            == project.url.resolvingSymlinksInPath().standardizedFileURL
+    }
+
+    static func shouldHideRemovedTrashItem(at url: URL, in project: Project) -> Bool {
+        project.isTrash
+            && (try? url.extendedAttribute(forName: AppIdentifier.removedFromTrashKey)) != nil
+    }
+
     public func getBookmarks() -> [URL] {
         bookmarks
     }
@@ -504,6 +522,8 @@ class Storage {
         for document in documents {
             let url = document.url
 
+            guard !Self.shouldHideRemovedTrashItem(at: url, in: item) else { continue }
+
             if let currentNoteURL = EditTextView.note?.url,
                 currentNoteURL.resolvingSymlinksInPath().path == url.resolvingSymlinksInPath().path
             {
@@ -594,6 +614,8 @@ class Storage {
         for document in documents {
             let url = document.url
 
+            guard !Self.shouldHideRemovedTrashItem(at: url, in: project) else { continue }
+
             // Check if note is already loaded to avoid duplicates
             if noteList.contains(where: { $0.url == url }) {
                 continue
@@ -650,6 +672,22 @@ class Storage {
 
         for project in projects where project.isTrash {
             loadLabel(project, loadContent: true)
+        }
+    }
+
+    /// Reconcile a Trash project before presenting it. FSEvents can coalesce
+    /// or delay a removal from the system Trash, so the in-memory list may
+    /// still contain a Note whose file is already gone. Retiring the old
+    /// object closes every late-save path before it is removed from storage.
+    func retireMissingNotes(in project: Project) {
+        let missingNotes = noteList.filter {
+            $0.project == project
+                && (!FileManager.default.fileExists(atPath: $0.url.path)
+                    || Self.shouldHideRemovedTrashItem(at: $0.url, in: project))
+        }
+        for note in missingNotes {
+            note.retireAfterRemoval()
+            removeBy(note: note)
         }
     }
 
@@ -874,7 +912,14 @@ class Storage {
         return nil
     }
 
-    func removeNotes(notes: [Note], fsRemove: Bool = true, completely: Bool = false, partialFailure: ((Int) -> Void)? = nil, completion: @escaping ([URL: URL]?) -> Void) {
+    func removeNotes(
+        notes: [Note],
+        fsRemove: Bool = true,
+        completely: Bool = false,
+        partialFailure: ((Int) -> Void)? = nil,
+        didRemove: (([Note]) -> Void)? = nil,
+        completion: @escaping ([URL: URL]?) -> Void
+    ) {
         guard !notes.isEmpty else {
             completion(nil)
             return
@@ -895,9 +940,20 @@ class Storage {
                 succeeded.append(note)
                 continue
             }
+
+            // Preserve the latest editor bytes in the recoverable Trash copy.
+            // The watcher path skips this because its file is already gone;
+            // flushing there would recreate the externally removed note.
+            guard note.flushPendingSave(globalStorage: false) else {
+                failedCount += 1
+                continue
+            }
+
             let originalPath = note.url.path
-            if let trashURLs = note.removeFile(completely: completely) {
-                removed[trashURLs[0]] = trashURLs[1]
+            if let removal = note.removeFile(completely: completely) {
+                if case .moved(let destination, let original) = removal {
+                    removed[destination] = original
+                }
                 succeeded.append(note)
             } else if !FileManager.default.fileExists(atPath: originalPath) {
                 // removeFile returned nil because the file was already gone.
@@ -909,8 +965,10 @@ class Storage {
         }
 
         for note in succeeded {
+            note.retireAfterRemoval()
             removeBy(note: note)
         }
+        didRemove?(succeeded)
 
         if failedCount > 0 {
             let warning = NSError(
@@ -1183,6 +1241,10 @@ class Storage {
             return nil
         }
 
+        guard !Self.shouldHideRemovedTrashItem(at: url, in: project) else {
+            return nil
+        }
+
         let note = Note(url: url, with: project)
 
         return note
@@ -1227,7 +1289,7 @@ class Storage {
         }
     }
 
-    /// Flush every note's pending debounced save synchronously.
+    /// Flush every note with unpersisted content synchronously.
     /// Called from lifecycle hooks (applicationWillTerminate, windowWillClose,
     /// windowDidResignKey) and explicit Cmd+S so the 1.5s debounce window
     /// cannot eat user edits.
@@ -1237,11 +1299,14 @@ class Storage {
     /// trigger storage.add(self) (line ~603, when globalStorage=true), which
     /// mutates noteList. Iterating the original would crash with the
     /// "modified during iteration" trap on a hot path that the user feels.
-    public func flushPendingSaves() {
-        let pending = noteList.filter { $0.hasPendingSave }
-        for note in pending {
-            note.flushPendingSave()
+    @discardableResult
+    public func flushPendingSaves() -> Bool {
+        let dirtyNotes = noteList.filter(\.needsSave)
+        var allSucceeded = true
+        for note in dirtyNotes where !note.flushPendingSave() {
+            allSucceeded = false
         }
+        return allSucceeded
     }
 
     public func loadProjects(from urls: [URL]) {

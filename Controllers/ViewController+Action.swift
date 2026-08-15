@@ -436,11 +436,6 @@ extension ViewController {
 
         UserDataService.instance.searchTrigger = true
 
-        // Compute next selection deterministically and apply in the same
-        // synchronous stretch as the row removal so the user never sees the
-        // auto-select-first row 0 flash followed by a second jump.
-        vc.notesTableView.removeAndReselect(notes: notes, originalRow: selectedRow)
-
         let onPartialFailure: (Int) -> Void = { failedCount in
             DispatchQueue.main.async { [weak vc] in
                 guard let vc = vc else { return }
@@ -450,7 +445,15 @@ extension ViewController {
                 )
             }
         }
-        vc.storage.removeNotes(notes: notes, partialFailure: onPartialFailure) { urls in
+        vc.storage.removeNotes(
+            notes: notes,
+            partialFailure: onPartialFailure,
+            didRemove: { removedNotes in
+                vc.notesTableView.removeAndReselect(
+                    notes: removedNotes,
+                    originalRow: selectedRow)
+            }
+        ) { urls in
             if let appd = NSApplication.shared.delegate as? AppDelegate,
                 let md = appd.mainWindowController
             {
@@ -1047,7 +1050,6 @@ extension ViewController {
         ) { confirmed in
             if confirmed {
                 let selectedRow = vc.notesTableView.selectedRowIndexes.min() ?? -1
-                vc.notesTableView.removeAndReselect(notes: notes, originalRow: selectedRow)
                 let onPartialFailure: (Int) -> Void = { failedCount in
                     DispatchQueue.main.async {
                         vc.toast(
@@ -1056,7 +1058,15 @@ extension ViewController {
                         )
                     }
                 }
-                vc.storage.removeNotes(notes: notes, partialFailure: onPartialFailure) { _ in
+                vc.storage.removeNotes(
+                    notes: notes,
+                    partialFailure: onPartialFailure,
+                    didRemove: { removedNotes in
+                        vc.notesTableView.removeAndReselect(
+                            notes: removedNotes,
+                            originalRow: selectedRow)
+                    }
+                ) { _ in
                     DispatchQueue.main.async {
                         vc.storageOutlineView.reloadSidebar()
                         if vc.getSidebarItem() == nil {
@@ -1608,9 +1618,9 @@ extension ViewController {
             if let activeNote = EditTextView.note {
                 editArea.saveTextStorageContent(to: activeNote)
             }
-            let hadPending = storage.noteList.contains { $0.hasPendingSave }
-            storage.flushPendingSaves()
-            if hadPending {
+            let hadUnsavedChanges = storage.noteList.contains { $0.needsSave }
+            let allSaved = storage.flushPendingSaves()
+            if hadUnsavedChanges, allSaved {
                 toast(message: I18n.str("Saved~"), style: .success)
             }
             return false
