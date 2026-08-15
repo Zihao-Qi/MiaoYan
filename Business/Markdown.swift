@@ -7,21 +7,355 @@ extension String {
     }
 }
 
+private struct MarkdownMathDelimiter {
+    let left: [Unicode.Scalar]
+    let right: [Unicode.Scalar]
+}
+
+private let markdownMathDelimiters = [
+    MarkdownMathDelimiter(left: Array("$$".unicodeScalars), right: Array("$$".unicodeScalars)),
+    MarkdownMathDelimiter(left: Array("$".unicodeScalars), right: Array("$".unicodeScalars)),
+    MarkdownMathDelimiter(left: Array("\\(".unicodeScalars), right: Array("\\)".unicodeScalars)),
+    MarkdownMathDelimiter(left: Array("\\[".unicodeScalars), right: Array("\\]".unicodeScalars)),
+]
+private let markdownExtensionNames = ["table", "footnotes", "strikethrough", "tasklist"]
+private let katexIgnoredHTMLRegex: NSRegularExpression = {
+    let pattern = #"<(script|noscript|style|textarea|pre|code|option)\b[^>]*>[\s\S]*?</\1\s*>"#
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+        preconditionFailure("katexIgnoredHTMLRegex literal is invalid: \(pattern)")
+    }
+    return regex
+}()
+
+/// Shields math from Markdown emphasis, code, link, and raw-HTML parsing.
+/// KaTeX receives the original text because cmark/marked decode numeric HTML
+/// entities after their Markdown pass. Newlines stay literal so source line
+/// positions and the existing display-math line-break cleanup remain stable.
+func protectMarkdownMath(_ markdown: String) -> String {
+    guard markdown.contains("$") || markdown.contains("\\(") || markdown.contains("\\[") else {
+        return markdown
+    }
+
+    let scalars = Array(markdown.unicodeScalars)
+    let codeMask = markdownCodeMask(in: scalars, markdown: markdown)
+    var protected = ""
+    protected.reserveCapacity(markdown.utf8.count)
+
+    var index = 0
+    while index < scalars.count {
+        guard !codeMask[index],
+            let delimiter = markdownMathDelimiters.first(where: {
+                matches($0.left, in: scalars, at: index, codeMask: codeMask)
+                    && !isEscaped(in: scalars, at: index)
+                    && !isCurrencyDollar($0.left, in: scalars, at: index)
+            }),
+            let end = findMathEnd(
+                delimiter.right,
+                in: scalars,
+                from: index + delimiter.left.count,
+                codeMask: codeMask
+            )
+        else {
+            protected.unicodeScalars.append(scalars[index])
+            index += 1
+            continue
+        }
+
+        appendProtectedMathScalars(delimiter.left, to: &protected)
+        for scalar in scalars[(index + delimiter.left.count)..<end] {
+            appendProtectedMathScalar(scalar, to: &protected)
+        }
+        appendProtectedMathScalars(delimiter.right, to: &protected)
+        index = end + delimiter.right.count
+    }
+
+    return protected
+}
+
+private func findMathEnd(
+    _ delimiter: [Unicode.Scalar],
+    in scalars: [Unicode.Scalar],
+    from start: Int,
+    codeMask: [Bool]
+) -> Int? {
+    var index = start
+    var braceLevel = 0
+
+    while index < scalars.count {
+        if codeMask[index] {
+            return nil
+        }
+        if braceLevel <= 0,
+            matches(delimiter, in: scalars, at: index, codeMask: codeMask),
+            !isCurrencyDollar(delimiter, in: scalars, at: index)
+        {
+            return index
+        }
+
+        switch scalars[index].value {
+        case 92:  // Backslash escapes the following scalar inside KaTeX.
+            index += min(2, scalars.count - index)
+        case 123:  // {
+            braceLevel += 1
+            index += 1
+        case 125:  // }
+            braceLevel -= 1
+            index += 1
+        default:
+            index += 1
+        }
+    }
+
+    return nil
+}
+
+private func matches(
+    _ candidate: [Unicode.Scalar],
+    in scalars: [Unicode.Scalar],
+    at index: Int,
+    codeMask: [Bool]
+) -> Bool {
+    guard index + candidate.count <= scalars.count else { return false }
+    for offset in candidate.indices {
+        guard !codeMask[index + offset], scalars[index + offset] == candidate[offset] else {
+            return false
+        }
+    }
+    return true
+}
+
+private func isEscaped(in scalars: [Unicode.Scalar], at index: Int) -> Bool {
+    guard index > 0 else { return false }
+    var cursor = index - 1
+    var backslashCount = 0
+    while scalars[cursor].value == 92 {
+        backslashCount += 1
+        guard cursor > 0 else { break }
+        cursor -= 1
+    }
+    return backslashCount % 2 == 1
+}
+
+/// Mirrors the preview's currency guard so two prices on separate lines do
+/// not become one giant inline-math range that suppresses Markdown between
+/// them. Math such as `$2+2$` is not classified as currency.
+private func isCurrencyDollar(
+    _ delimiter: [Unicode.Scalar],
+    in scalars: [Unicode.Scalar],
+    at index: Int
+) -> Bool {
+    guard delimiter.count == 1, delimiter[0].value == 36 else { return false }
+    var cursor = index + 1
+    let digitStart = cursor
+    while cursor < scalars.count, (48...57).contains(scalars[cursor].value) {
+        cursor += 1
+    }
+    guard cursor > digitStart else { return false }
+
+    if cursor < scalars.count,
+        scalars[cursor].value == 46 || scalars[cursor].value == 44
+    {
+        let fractionalStart = cursor + 1
+        cursor = fractionalStart
+        while cursor < scalars.count, (48...57).contains(scalars[cursor].value) {
+            cursor += 1
+        }
+        if cursor == fractionalStart {
+            cursor -= 1
+        }
+    }
+
+    guard cursor < scalars.count else { return true }
+    let next = scalars[cursor].value
+    let isASCIIAlphaNumeric = (48...57).contains(next) || (65...90).contains(next) || (97...122).contains(next)
+    let isMathContinuation =
+        next == 42 || next == 43 || next == 45 || next == 47 || next == 60
+        || next == 61 || next == 62 || next == 92 || next == 94 || next == 95
+    return !isASCIIAlphaNumeric && !isMathContinuation
+}
+
+private func appendProtectedMathScalars(_ scalars: [Unicode.Scalar], to output: inout String) {
+    for scalar in scalars {
+        appendProtectedMathScalar(scalar, to: &output)
+    }
+}
+
+private func appendProtectedMathScalar(_ scalar: Unicode.Scalar, to output: inout String) {
+    if scalar.value == 10 || scalar.value == 13 {
+        output.unicodeScalars.append(scalar)
+    } else {
+        output.append(contentsOf: "&#\(scalar.value);")
+    }
+}
+
+/// Marks fenced and inline code before scanning math. A delimiter that crosses
+/// a code boundary is intentionally left untouched, matching KaTeX's ignored
+/// CODE/PRE behavior after Markdown rendering.
+private func markdownCodeMask(in scalars: [Unicode.Scalar], markdown: String) -> [Bool] {
+    var mask = Array(repeating: false, count: scalars.count)
+    maskMarkdownCodeBlocks(in: scalars, markdown: markdown, mask: &mask)
+
+    var index = 0
+    while index < scalars.count {
+        guard !mask[index], scalars[index].value == 96,
+            !isEscaped(in: scalars, at: index)
+        else {
+            index += 1
+            continue
+        }
+
+        let runLength = scalarRunLength(96, in: scalars, from: index)
+        var closingIndex = index + runLength
+        var foundClosingIndex: Int?
+
+        while closingIndex < scalars.count {
+            if mask[closingIndex] {
+                break
+            }
+            if scalars[closingIndex].value == 96 {
+                let closingLength = scalarRunLength(96, in: scalars, from: closingIndex)
+                if closingLength == runLength {
+                    foundClosingIndex = closingIndex
+                    break
+                }
+                closingIndex += closingLength
+            } else {
+                closingIndex += 1
+            }
+        }
+
+        guard let closing = foundClosingIndex else {
+            index += runLength
+            continue
+        }
+        for codeIndex in index..<(closing + runLength) {
+            mask[codeIndex] = true
+        }
+        index = closing + runLength
+    }
+
+    maskKaTeXIgnoredHTML(in: scalars, markdown: markdown, mask: &mask)
+
+    return mask
+}
+
+/// KaTeX never visits these elements. Protecting their source would be at
+/// best unnecessary and can be destructive for raw-text tags such as script,
+/// where browsers intentionally do not decode numeric HTML entities.
+private func maskKaTeXIgnoredHTML(
+    in scalars: [Unicode.Scalar],
+    markdown: String,
+    mask: inout [Bool]
+) {
+    let fullRange = NSRange(markdown.startIndex..., in: markdown)
+    katexIgnoredHTMLRegex.enumerateMatches(
+        in: markdown,
+        options: [],
+        range: fullRange
+    ) { match, _, _ in
+        guard let match,
+            let stringRange = Range(match.range, in: markdown)
+        else {
+            return
+        }
+
+        let start = markdown.unicodeScalars.distance(
+            from: markdown.unicodeScalars.startIndex,
+            to: stringRange.lowerBound)
+        let end = markdown.unicodeScalars.distance(
+            from: markdown.unicodeScalars.startIndex,
+            to: stringRange.upperBound)
+        guard start < end, start < mask.count, !mask[start] else { return }
+        for index in start..<min(end, scalars.count) {
+            mask[index] = true
+        }
+    }
+}
+
+/// Uses cmark's own block parser so indented, quoted, and list-nested code
+/// follow exactly the same CommonMark container rules as the final render.
+private func maskMarkdownCodeBlocks(
+    in scalars: [Unicode.Scalar],
+    markdown: String,
+    mask: inout [Bool]
+) {
+    cmark_gfm_core_extensions_ensure_registered()
+    guard let parser = cmark_parser_new(CMARK_OPT_FOOTNOTES) else { return }
+    defer { cmark_parser_free(parser) }
+    for extensionName in markdownExtensionNames {
+        if let syntaxExtension = cmark_find_syntax_extension(extensionName) {
+            cmark_parser_attach_syntax_extension(parser, syntaxExtension)
+        }
+    }
+    cmark_parser_feed(parser, markdown, markdown.utf8.count)
+    guard let root = cmark_parser_finish(parser) else { return }
+    defer { cmark_node_free(root) }
+    guard let iterator = cmark_iter_new(root) else { return }
+    defer { cmark_iter_free(iterator) }
+
+    var lineStarts = [0]
+    var lineIndex = 0
+    while lineIndex < scalars.count {
+        let value = scalars[lineIndex].value
+        if value == 13 {
+            if lineIndex + 1 < scalars.count, scalars[lineIndex + 1].value == 10 {
+                lineIndex += 1
+            }
+            lineStarts.append(lineIndex + 1)
+        } else if value == 10 {
+            lineStarts.append(lineIndex + 1)
+        }
+        lineIndex += 1
+    }
+
+    while cmark_iter_next(iterator) != CMARK_EVENT_DONE {
+        guard let node = cmark_iter_get_node(iterator),
+            cmark_node_get_type(node) == CMARK_NODE_CODE_BLOCK
+        else {
+            continue
+        }
+
+        let startLine = max(Int(cmark_node_get_start_line(node)) - 1, 0)
+        let endLine = max(Int(cmark_node_get_end_line(node)), 0)
+        guard startLine < lineStarts.count else { continue }
+        let start = lineStarts[startLine]
+        let end = endLine < lineStarts.count ? lineStarts[endLine] : scalars.count
+        if start < end {
+            for index in start..<end {
+                mask[index] = true
+            }
+        }
+    }
+}
+
+private func scalarRunLength(
+    _ value: UInt32,
+    in scalars: [Unicode.Scalar],
+    from start: Int
+) -> Int {
+    var end = start
+    while end < scalars.count, scalars[end].value == value {
+        end += 1
+    }
+    return end - start
+}
+
 func renderMarkdownHTML(markdown: String, useGithubLineBreak: Bool) -> String? {
     cmark_gfm_core_extensions_ensure_registered()
 
     guard let parser = cmark_parser_new(CMARK_OPT_FOOTNOTES) else { return nil }
     defer { cmark_parser_free(parser) }
 
-    let extensions = ["table", "footnotes", "strikethrough", "tasklist"]
-    for extName in extensions {
-        if let ext = cmark_find_syntax_extension(extName) {
-            cmark_parser_attach_syntax_extension(parser, ext)
+    for extensionName in markdownExtensionNames {
+        if let syntaxExtension = cmark_find_syntax_extension(extensionName) {
+            cmark_parser_attach_syntax_extension(parser, syntaxExtension)
         }
     }
 
-    cmark_parser_feed(parser, markdown, markdown.utf8.count)
+    let protectedMarkdown = protectMarkdownMath(markdown)
+    cmark_parser_feed(parser, protectedMarkdown, protectedMarkdown.utf8.count)
     guard let node = cmark_parser_finish(parser) else { return nil }
+    defer { cmark_node_free(node) }
 
     var res: String
     if useGithubLineBreak {

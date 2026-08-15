@@ -727,6 +727,10 @@ class HtmlManager {
             .replacingOccurrences(of: "](/i/", with: "](./i/")
     }
 
+    static func prepareMarkdownForPPT(_ content: String) -> String {
+        escapeForPPT(protectMarkdownMath(content))
+    }
+
     @MainActor
     static func getBaseURL(bundle: Bundle) -> URL? {
         let resourceName = UserDefaultsManagement.magicPPT ? "ppt" : "index"
@@ -795,7 +799,7 @@ class HtmlManager {
 
         if UserDefaultsManagement.magicPPT {
             replacements["DOWN_THEME"] = getPPTTheme()
-            replacements["DOWN_RAW"] = escapeForPPT(htmlString)
+            replacements["DOWN_RAW"] = prepareMarkdownForPPT(htmlString)
             return applyTemplateReplacements(template, replacements: replacements)
         }
 
