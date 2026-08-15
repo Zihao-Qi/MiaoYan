@@ -60,6 +60,29 @@ class SidebarProjectView: NSOutlineView,
         }
     }
 
+    override func tile() {
+        super.tile()
+        guard let clipView = superview as? NSClipView,
+            let column = tableColumns.first
+        else { return }
+
+        let clipWidth = clipView.bounds.width
+        guard clipWidth > 0 else { return }
+
+        if abs(frame.width - clipWidth) > 0.5 {
+            setFrameSize(NSSize(width: clipWidth, height: frame.height))
+        }
+        if abs(column.width - clipWidth) > 0.5 {
+            column.width = clipWidth
+        }
+
+        let origin = clipView.bounds.origin
+        if origin.x != 0 {
+            clipView.scroll(to: NSPoint(x: 0, y: origin.y))
+            enclosingScrollView?.reflectScrolledClipView(clipView)
+        }
+    }
+
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         guard let sidebarItem = getSidebarItem() else {
             return false
