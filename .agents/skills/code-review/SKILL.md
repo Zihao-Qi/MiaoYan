@@ -27,7 +27,7 @@ xcodebuild -project MiaoYan.xcodeproj -scheme MiaoYan -configuration Debug build
 swiftlint lint --strict
 
 # Format check
-swift-format lint --recursive .
+swift-format lint --recursive . --strict
 ```
 
 ## MiaoYan-Specific Checks

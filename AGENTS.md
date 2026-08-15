@@ -7,7 +7,8 @@
 > Claude-specific assets:
 > - 全局规则: `~/.claude/CLAUDE.md`
 > - Swift 通用规则: `~/.claude/rules/swift.md` (项目级补充 `.claude/rules/swift.md`)
-> - 项目 skills: `.claude/skills/` - `release`, `appstore`, `lint`, `code-review`, `github-ops`
+> - 项目 skills 的 tracked canonical source: `.agents/skills/` - `release`, `appstore`, `lint`, `code-review`, `github-ops`
+> - `.claude/skills/` 是 gitignored 的本机兼容镜像；只编辑 `.agents/skills/`，再运行 `bash scripts/sync-agent-skills.sh --write` 和 `--check`
 
 ## Project
 
@@ -49,6 +50,7 @@ xcodebuild test -project MiaoYan.xcodeproj -scheme MiaoYan -destination 'platfor
 xcodebuild -project MiaoYan.xcodeproj -scheme MiaoYanMobile -configuration Debug -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
 swiftlint lint --strict
 swift-format lint --recursive . --strict   # --strict is what CI runs; without it a local pass can still fail CI
+bash scripts/sync-agent-skills.sh --check  # compare the gitignored local Claude mirror; use --write first if absent
 bash scripts/build.sh
 bash scripts/build-appstore.sh
 ruby scripts/add_tests_target.rb     # only when re-wiring MiaoYanTests after pbxproj reset
@@ -199,7 +201,7 @@ MiaoYan ships through two independent channels. Publishing one never updates the
 - Tag format is uppercase `Vx.y.z`.
 - Version changes must keep both `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `MiaoYan.xcodeproj/project.pbxproj` aligned with the release tag. Sparkle compares `sparkle:version` in appcast.xml against `CFBundleVersion` (mapped from `CURRENT_PROJECT_VERSION`), not `CFBundleShortVersionString`. If the two diverge, users get an infinite update prompt loop (V3.5.1 incident, #524).
 - `.github/RELEASE_NOTES.md` is the public release note source. Release scripts under `scripts/release-ci/` render it for GitHub release and appcast content, including the current sectionless format.
-- Release titles follow `V{x.y.z} {Codename} {emoji}` (e.g. `V4.0.0 Valstrax 🚀`). Before drafting notes, `gh release view` the previous release and mirror its exact body shape instead of rebuilding it from memory; the full format and reaction ritual live in `.claude/skills/release`.
+- Release titles follow `V{x.y.z} {Codename} {emoji}` (e.g. `V4.0.0 Valstrax 🚀`). Before drafting notes, `gh release view` the previous release and mirror its exact body shape instead of rebuilding it from memory; the full format and reaction ritual live in `.agents/skills/release/SKILL.md`.
 - Publishing ends with the six positive reactions (`+1`, `laugh`, `heart`, `hooray`, `rocket`, `eyes`) added via `gh api` and read back to confirm. Never add `-1` or `confused`.
 - Direct-download Sparkle signing must use the MiaoYan release key, not the default Sparkle Keychain account. Before pushing appcast changes, verify the signature against the published ZIP and the app's embedded `SUPublicEDKey` with `scripts/release-ci/verify_sparkle_signature.sh`; a signature-only appcast fix is valid only when ZIP bytes and length are unchanged.
 - Direct-download release builds use repository scripts; no tracked workflow packages a release.
@@ -210,6 +212,7 @@ MiaoYan ships through two independent channels. Publishing one never updates the
 - Swift changes: run the Debug `xcodebuild` command above.
 - UI or interaction fixes: launch the built app and exercise the changed flow before reporting done; a green build is not visual proof. If the first fix attempt does not hold, stop guessing and add `#if DEBUG` runtime logging to capture evidence before the next code change.
 - Lint or formatting changes: run SwiftLint and swift-format checks.
+- Project Skill changes: edit `.agents/skills/` only, then run `bash scripts/sync-agent-skills.sh --write` followed by `bash scripts/sync-agent-skills.sh --check`. The checker compares canonical files while allowing unrelated private Claude skills to remain local.
 - iOS changes: verification bar equals macOS. Inspect `MiaoYanMobile/` target membership, build, then run the affected flow in the Simulator (for example the new-note title flow or preview first frame) before reporting done; a green build alone is not done. Performance complaints need a measurable budget in the fix (for example: detail-page first frame past the budget shows a skeleton instead of blocking).
 - Release or signing changes: verify version alignment and inspect the relevant repository script; do not assume a tracked `release.yml` exists.
 - Release note changes: inspect `.github/RELEASE_NOTES.md` and the affected `scripts/release-ci/` renderer.

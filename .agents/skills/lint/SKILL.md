@@ -32,7 +32,7 @@ Config: `.swiftlint.yml` at project root.
 
 ```bash
 # Check formatting (no changes)
-swift-format lint --recursive .
+swift-format lint --recursive . --strict
 
 # Apply formatting
 swift-format format --recursive --in-place .
@@ -43,7 +43,7 @@ Config: `.swift-format` at project root (line length: 240).
 ## Run Both
 
 ```bash
-swiftlint lint --strict && swift-format lint --recursive .
+swiftlint lint --strict && swift-format lint --recursive . --strict
 ```
 
 ## Safety Rules
