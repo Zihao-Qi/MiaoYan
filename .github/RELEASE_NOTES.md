@@ -1,17 +1,19 @@
-# V4.1.0 Aegis 🛡️
+# V4.2.0 Zinogre 🍝
 
-1. 修复切换笔记时内容可能被另一篇覆盖的问题，保存前增加内容归属校验
-2. 预览支持 GitHub 风格提示卡片，NOTE、TIP、WARNING 等五类适配亮暗主题
-3. 新增排版净化，一键规范中英文空格和标点，代码、链接、公式保持原样
-4. 从网页或 AI 工具复制的内容粘贴时自动转成 Markdown，表格和列表不走样
-5. 支持批量导入 Markdown 文件和文件夹，整理旧笔记更方便
-6. iOS 编辑器支持语法高亮和图片粘贴，新增外部云文件夹和阅读细节优化
+1. 修复已删除笔记被延迟保存重新创建的问题，切换侧栏或重启后不会再次出现
+2. 修复复杂 LaTeX 公式渲染，下标、绝对值和自适应括号现在可在预览与 PPT 中正确组合
+3. 修复删除笔记后侧边栏可能横向偏移的问题，文件夹列表会始终贴齐窗口宽度
+4. 改进 PDF 导出，Mermaid 图表不再重复渲染，标题也会沿用当前笔记字体
+5. 修复 PPT 本地图片丢失，以及窗口置顶时偏好设置被遮挡的问题
+6. 改进 HDR 照片在 Markdown 预览中的显示效果，画面不再异常过曝
+7. 新增官方 MiaoYan Agent Skill，让 Agent 能按妙言的语法、附件、PPT 与 CLI 规范处理笔记
 
 ---
 
-1. Fixes a rare case where switching notes could overwrite one note with another
-2. Preview renders GitHub-style alert cards, all five kinds themed for light and dark
-3. New Clean Typography command normalizes mixed CJK and Latin spacing and punctuation
-4. Pasting from web pages or AI tools converts rich content to clean Markdown
-5. Batch import Markdown files and folders to bring old notes into MiaoYan
-6. iOS editor gains syntax highlight and image paste, plus external cloud folders
+1. Prevents deleted notes from being recreated by delayed saves after switching sections or restarting
+2. Complex LaTeX formulas now render correctly in preview and PPT when subscripts, absolute values, and adaptive delimiters are combined
+3. Sidebar folders remain horizontally aligned after deleting notes, reloading, or resizing the window
+4. PDF exports no longer rerender Mermaid diagrams, and headings use the current note font
+5. PPT keeps local images, and Preferences stays visible when windows are kept on top
+6. HDR photos display with balanced tones instead of appearing overexposed in Markdown preview
+7. New official MiaoYan Agent Skill teaches agents the app's Markdown, attachment, PPT, and CLI conventions
