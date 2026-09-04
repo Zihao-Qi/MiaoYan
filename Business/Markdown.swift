@@ -169,7 +169,7 @@ private func isCurrencyDollar(
     let next = scalars[cursor].value
     let isASCIIAlphaNumeric = (48...57).contains(next) || (65...90).contains(next) || (97...122).contains(next)
     let isMathContinuation =
-        next == 42 || next == 43 || next == 45 || next == 47 || next == 60
+        next == 40 || next == 42 || next == 43 || next == 45 || next == 47 || next == 60
         || next == 61 || next == 62 || next == 92 || next == 94 || next == 95
     return !isASCIIAlphaNumeric && !isMathContinuation
 }
