@@ -154,6 +154,23 @@ final class HtmlManagerTests: XCTestCase {
             "`<script>$code_math$</script>`")
     }
 
+    func testCoefficientParenthesisMathDoesNotConsumeFollowingTable() throws {
+        let markdown = #"""
+            $2(k-2)$
+
+            | Symbol | Meaning |
+            | ------ | ------- |
+            | $n$    | Number of variables |
+            """#
+        let html = try XCTUnwrap(
+            renderMarkdownHTML(markdown: markdown, useGithubLineBreak: false)
+        )
+
+        XCTAssertTrue(html.contains("<table"))
+        XCTAssertTrue(html.contains("$2(k-2)$"))
+        XCTAssertTrue(html.contains("$n$"))
+    }
+
     func testPPTPreparationUsesTheSharedMathProtection() {
         let prepared = HtmlManager.prepareMarkdownForPPT(nestedUnderbraceFormula)
 
