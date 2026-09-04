@@ -154,6 +154,30 @@ final class HtmlManagerTests: XCTestCase {
             "`<script>$code_math$</script>`")
     }
 
+    func testNumericOnlyMathDoesNotConsumeFollowingMarkdownBlocks() throws {
+        let markdown = #"""
+            - Write $0$ if they agree.
+            - Write $1$ if they disagree.
+
+            The disagreement distance is $0.25$.
+
+            ## Counts
+
+            | Symbol | Example |
+            | ------ | ------- |
+            | $n$    | $100$ variables |
+            """#
+        let html = try XCTUnwrap(
+            renderMarkdownHTML(markdown: markdown, useGithubLineBreak: false)
+        )
+
+        XCTAssertEqual(html.components(separatedBy: "<li").count - 1, 2)
+        XCTAssertTrue(html.contains("<h2"))
+        XCTAssertTrue(html.contains("<table"))
+        XCTAssertTrue(html.contains("$0.25$"))
+        XCTAssertTrue(html.contains("$100$"))
+    }
+
     func testCoefficientParenthesisMathDoesNotConsumeFollowingTable() throws {
         let markdown = #"""
             $2(k-2)$
