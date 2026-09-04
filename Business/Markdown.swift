@@ -171,7 +171,8 @@ private func isCurrencyDollar(
     let isMathContinuation =
         next == 40 || next == 42 || next == 43 || next == 45 || next == 47 || next == 60
         || next == 61 || next == 62 || next == 92 || next == 94 || next == 95
-    return !isASCIIAlphaNumeric && !isMathContinuation
+    let isInlineMathClose = next == delimiter[0].value
+    return !isASCIIAlphaNumeric && !isMathContinuation && !isInlineMathClose
 }
 
 private func appendProtectedMathScalars(_ scalars: [Unicode.Scalar], to output: inout String) {
